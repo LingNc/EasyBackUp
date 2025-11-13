@@ -17,6 +17,7 @@ public class BackupTask {
 
     private final EasyBackUp plugin;
     private final FileConfiguration config;
+    private volatile boolean broadcastProgress = false;
 
     public static class Result {
         public final boolean success;
@@ -41,6 +42,7 @@ public class BackupTask {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
 
         boolean ifBroadcast = config.getBoolean("notify-players", true);
+        this.broadcastProgress = ifBroadcast; // 进度广播跟随 notify-players
         List<String> targetsCfg = config.getStringList("target-save-paths");
         if (targetsCfg == null || targetsCfg.isEmpty()) {
             // 兼容旧版键名
@@ -214,7 +216,12 @@ public class BackupTask {
                 zos.closeEntry();
                 processed++;
                 if (processed % progressEvery == 0) {
-                    plugin.getLogger().info("备份进度: " + processed + (totalFiles > 0 ? ("/" + totalFiles) : "") + " 文件...");
+                    String msg = "备份进度: " + processed + (totalFiles > 0 ? ("/" + totalFiles + " (" + percent(processed, totalFiles) + ")") : "") + " 文件...";
+                    plugin.getLogger().info(msg);
+                    if (broadcastProgress) {
+                        final String bmsg = org.bukkit.ChatColor.translateAlternateColorCodes('&', "&a[EasyBackUp] &3" + msg);
+                        Bukkit.getScheduler().runTask(plugin, () -> Bukkit.broadcastMessage(bmsg));
+                    }
                 }
             } catch (IOException e) {
                 if (!f.getName().equals("session.lock")) {
@@ -255,6 +262,14 @@ public class BackupTask {
             for (String s : list) if (s != null) set.add(s.toLowerCase(Locale.ROOT));
         }
         return set;
+    }
+
+    private static String percent(long a, long b) {
+        if (b <= 0) return "";
+        double p = (a * 100.0) / b;
+        if (p >= 100) return "100%";
+        if (p <= 0) return "0%";
+        return String.format(java.util.Locale.ROOT, "%.1f%%", p);
     }
 
     private File resolveServerRoot() {

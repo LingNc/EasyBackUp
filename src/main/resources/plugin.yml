@@ -9,7 +9,7 @@ commands:
       /ebu now                # 立即备份
       /ebu status             # 查看上次/下次备份状态
       /ebu reload             # 热重载配置
-      /ebu set <key> <value>  # 动态修改常用配置（例如 interval-hours, output-dir）
+      /ebu set <key> <value>  # 动态修改常用配置（例如 interval, output-dir）
     permission: ebu.use
 permissions:
   ebu.use:

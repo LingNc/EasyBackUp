@@ -138,7 +138,7 @@ public class EasyBackUp extends JavaPlugin {
             return true;
         }
 
-        String sub = args[0].toLowerCase();
+        String sub = normalizeSub(args[0]);
         switch (sub) {
             case "backup": // 兼容旧用法
             case "now":
@@ -192,7 +192,7 @@ public class EasyBackUp extends JavaPlugin {
                     sender.sendMessage("§7可用key: interval, output-dir, max-backups, notify-players");
                     return true;
                 }
-                String key = args[1];
+                String key = normalizeKey(args[1]);
                 String value = args[2];
                 switch (key.toLowerCase()) {
                     case "interval":
@@ -222,7 +222,7 @@ public class EasyBackUp extends JavaPlugin {
                         }
                         return true;
                     case "notify-players":
-                        boolean flag = Boolean.parseBoolean(value);
+                        boolean flag = parseBooleanFlexible(value);
                         getConfig().set("notify-players", flag);
                         saveConfig();
                         sender.sendMessage("§a已设置广播开关为 " + flag);
@@ -235,6 +235,96 @@ public class EasyBackUp extends JavaPlugin {
                 sender.sendMessage("§e未知子命令。用法: /ebu now|status|reload|set <key> <value>");
                 return true;
         }
+    }
+
+    @Override
+    public java.util.List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (!Objects.equals(command.getName(), "ebu")) return java.util.Collections.emptyList();
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (args.length == 1) {
+            java.util.List<String> subs = java.util.Arrays.asList("now", "status", "reload", "set", "backup", "立即", "状态", "重载", "设置");
+            for (String s : subs) if (startsWithIgnoreCase(s, args[0])) out.add(s);
+            return out;
+        }
+        String first = normalizeSub(args[0]);
+        if (args.length == 2) {
+            if ("set".equals(first)) {
+                java.util.List<String> keys = java.util.Arrays.asList("interval", "output-dir", "max-backups", "notify-players", "间隔", "输出目录", "最大备份", "广播");
+                for (String k : keys) if (startsWithIgnoreCase(k, args[1])) out.add(k);
+                return out;
+            }
+            return java.util.Collections.emptyList();
+        }
+        if (args.length == 3 && "set".equals(first)) {
+            String key = normalizeKey(args[1]);
+            switch (key) {
+                case "interval":
+                    for (String v : java.util.Arrays.asList("6H", "1D2H30M", "5M", "45S", "0S")) if (startsWithIgnoreCase(v, args[2])) out.add(v);
+                    break;
+                case "output-dir":
+                    for (String v : java.util.Arrays.asList("backups", "/data/backups", "C:\\\\backups")) if (startsWithIgnoreCase(v, args[2])) out.add(v);
+                    break;
+                case "max-backups":
+                    for (String v : java.util.Arrays.asList("5", "10", "20", "30")) if (startsWithIgnoreCase(v, args[2])) out.add(v);
+                    break;
+                case "notify-players":
+                    for (String v : java.util.Arrays.asList("true", "false", "开启", "关闭")) if (startsWithIgnoreCase(v, args[2])) out.add(v);
+                    break;
+            }
+            return out;
+        }
+        return java.util.Collections.emptyList();
+    }
+
+    private static boolean startsWithIgnoreCase(String a, String prefix) {
+        return a.regionMatches(true, 0, prefix, 0, Math.min(a.length(), prefix.length()));
+    }
+
+    private static String normalizeSub(String raw) {
+        String s = raw.toLowerCase();
+        switch (s) {
+            case "立即":
+            case "立刻":
+            case "现在":
+            case "备份":
+                return "now";
+            case "状态":
+            case "状态查看":
+                return "status";
+            case "重载":
+            case "重载配置":
+                return "reload";
+            case "设置":
+            case "设定":
+            case "配置":
+                return "set";
+            default:
+                return s;
+        }
+    }
+
+    private static String normalizeKey(String raw) {
+        String k = raw.toLowerCase();
+        switch (k) {
+            case "间隔":
+                return "interval";
+            case "输出目录":
+                return "output-dir";
+            case "最大备份":
+                return "max-backups";
+            case "广播":
+            case "是否广播":
+                return "notify-players";
+            default:
+                return k;
+        }
+    }
+
+    private static boolean parseBooleanFlexible(String raw) {
+        String v = raw.trim().toLowerCase();
+        if ("true".equals(v) || "是".equals(v) || "开启".equals(v) || "开".equals(v) || "yes".equals(v)) return true;
+        if ("false".equals(v) || "否".equals(v) || "关闭".equals(v) || "关".equals(v) || "no".equals(v)) return false;
+        return Boolean.parseBoolean(v);
     }
 
     // 解析间隔字符串为秒，支持: 1D2H30M45S / 3H / 5M / 45S / 大小写均可；允许空格分段
