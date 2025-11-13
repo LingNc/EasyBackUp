@@ -1,25 +1,38 @@
-# ================ EasyBackUp插件配置 ================
-# 说明: 此插件用于定时备份 Minecraft 服务器的重要数据
-# 作者: WilliamPepsi66
-# 版本: v1.0
+# ================ EasyBackUp 插件配置 ================
+# 用途: 定时或手动将服务器的“目录与文件”一起打包为 ZIP
+# 说明: 路径均相对服务器根目录（除非你填写绝对路径）
 
-# 备份间隔时间（单位：小时）
-# 默认: 6 (每6小时备份一次)
-# 注意: 设置为 0 可禁用自动备份
-backup-interval-hours: 6
+# 备份间隔（字符串格式，大小写均可）：示例 6H / 1D2H30M / 45S / 5M 等；
+# 设为 0S 或留空视为关闭自动备份。
+interval: '6H'
 
-# 需要备份的目录列表（相对于服务器根目录）
-# 重要提示:
-#   - 路径区分大小写！
-#   - 子目录会自动包含，无需单独列出
-target-save-dir:
+# 需要备份的路径（相对服务器根目录）。既可以是目录，也可以是单个文件。
+# 例:
+#   - world
+#   - world_nether
+#   - world_the_end
+#   - plugins
+#   - server.properties
+target-save-paths:
   - 'world'
 
-# 最大备份保留数量（防止磁盘占满）
-# 默认: 10 (超过数量时自动删除最旧的备份)
+# 备份输出目录
+# - 若为相对路径: 以服务器根目录为基准（默认: backups）
+# - 若为绝对路径: 直接使用（兼容 Windows/Linux，如 C:\\mc\\backups 或 /data/backups）
+output-dir: 'backups'
+
+# 最大备份保留数量（防止磁盘占满）。超过数量时将自动删除最旧的备份。
 max-backups: 10
 
-# 备份时是否显示服务器广播消息
-# 默认: true
-# 期望: true/false
+# 备份时是否全服广播提示（开始/结束）
 notify-players: true
+
+# 排除规则（可选）
+# 注意: 仅按名称/后缀匹配，不是通配符。
+exclude-dirs: []      # 目录名（如 'logs', 'cache'）
+exclude-files: []     # 文件名（如 'session.lock' 会自动跳过，这里可补充其它）
+exclude-extensions: []  # 后缀名，不要带点（如 'log', 'tmp'）
+
+# 进度与性能
+progress-every-files: 500   # 每处理多少个文件在控制台输出一次进度
+buffer-size-kb: 64          # 压缩缓冲区大小（越大通常越快，但更占内存）

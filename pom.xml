@@ -5,17 +5,22 @@
 
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.github.wzqLovesPizza</groupId>
+    <groupId>io.github.lingnc</groupId>
     <artifactId>EasyBackUp</artifactId>
-    <version>1.2.1-SNAPSHOT</version>
+    <version>1.3.0</version>
     <packaging>jar</packaging>
 
     <name>EasyBackUp</name>
-    <description>A simple, user-friendly backup plugin that meets most beginner server owners' expectations, compatible with Spigot/Bukkit servers.</description>
+    <description>由 LingNc 分支：统一的 ZIP 备份工具，支持文件和目录的备份，具有调度、热重载、状态检查、排除功能以及更好的用户体验。</description>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Spigot API 版本可以按需覆盖，例如 1.20.1-R0.1-SNAPSHOT / 1.21.1-R0.1-SNAPSHOT -->
+        <spigot.api.version>1.20.1-R0.1-SNAPSHOT</spigot.api.version>
+        <!-- 用于产物命名，标注目标 MC 版本（仅文件名用途） -->
+    <mc.target.version>1.20.x</mc.target.version>
     </properties>
 
     <repositories>
@@ -33,9 +38,34 @@
         <dependency>
             <groupId>org.spigotmc</groupId>
             <artifactId>spigot-api</artifactId>
-            <version>1.20.1-R0.1-SNAPSHOT</version>
+            <version>${spigot.api.version}</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <finalName>${project.artifactId}-${project.version}-mc${mc.target.version}</finalName>
+    </build>
+
+    <licenses>
+        <license>
+            <name>Project License</name>
+            <url>https://raw.githubusercontent.com/LingNc/EasyBackUp/master/LICENSE</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+    <scm>
+        <url>https://github.com/LingNc/EasyBackUp</url>
+        <connection>scm:git:https://github.com/LingNc/EasyBackUp.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/LingNc/EasyBackUp.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+    <developers>
+        <developer>
+            <id>LingNc</id>
+            <name>LingNc</name>
+            <url>https://github.com/LingNc</url>
+        </developer>
+    </developers>
 
 </project>

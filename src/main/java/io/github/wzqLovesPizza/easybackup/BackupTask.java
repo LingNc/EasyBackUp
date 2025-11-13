@@ -1,129 +1,251 @@
 package io.github.wzqLovesPizza.easybackup;
 
 import org.bukkit.Bukkit;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.ChatColor;
+import org.bukkit.configuration.file.FileConfiguration;
 
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+public class BackupTask {
 
-public class BackupTask implements Runnable {
-
-    private final JavaPlugin plugin;
-    private final Map<File, File> backupMVFolderHash;
+    private final EasyBackUp plugin;
     private final FileConfiguration config;
 
+    public static class Result {
+        public final boolean success;
+        public final long filesCount;
+        public final long totalBytes;
+        public final String message;
 
-    public BackupTask(JavaPlugin plugin) {
+        public Result(boolean success, long filesCount, long totalBytes, String message) {
+            this.success = success;
+            this.filesCount = filesCount;
+            this.totalBytes = totalBytes;
+            this.message = message;
+        }
+    }
+
+    public BackupTask(EasyBackUp plugin) {
         this.plugin = plugin;
-        this.backupMVFolderHash = new HashMap<>();
         this.config = plugin.getConfig();
+    }
+
+    public Result runOnce() {
+        String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
+
+        boolean ifBroadcast = config.getBoolean("notify-players", true);
+        List<String> targetsCfg = config.getStringList("target-save-paths");
+        if (targetsCfg == null || targetsCfg.isEmpty()) {
+            // 兼容旧版键名
+            targetsCfg = config.getStringList("target-save-dir");
+        }
+        if (targetsCfg == null || targetsCfg.isEmpty()) {
+            plugin.getLogger().warning("配置 target-save-paths 为空，未执行备份。");
+            return new Result(false, 0, 0, "无目标");
+        }
+
         File serverRoot = plugin.getDataFolder().getParentFile().getParentFile();
 
-        List<String> mvFolderList = config.getStringList("target-save-dir");
-        if (!mvFolderList.isEmpty()) {
-            for (String mvFolder : mvFolderList) {
-                File worldMVFolder = new File(serverRoot, mvFolder);
-                if (worldMVFolder.exists()) {
-                    File backupMVFolder = new File(plugin.getDataFolder(), "BackupWorldsOf" + mvFolder);
-                    if (!backupMVFolder.exists()) backupMVFolder.mkdirs();
-                    backupMVFolderHash.put(worldMVFolder, backupMVFolder);
+        // 解析输出目录
+        String outPath = config.getString("output-dir", "backups");
+        File outputDir = new File(outPath);
+        if (!outputDir.isAbsolute()) {
+            outputDir = new File(serverRoot, outPath);
+        }
+        if (!outputDir.exists() && !outputDir.mkdirs()) {
+            plugin.getLogger().severe("无法创建备份输出目录: " + outputDir.getAbsolutePath());
+            return new Result(false, 0, 0, "输出目录创建失败");
+        }
 
-                } else {
-                    plugin.getLogger().warning("在服务器根路径找不到 " + mvFolder + " 文件夹");
+        File zipFile = new File(outputDir, "EasyBackUp_" + timestamp + ".zip");
+
+        // 解析排除
+        Set<String> excludeDirs = toLowerCaseSet(config.getStringList("exclude-dirs"));
+        Set<String> excludeFiles = toLowerCaseSet(config.getStringList("exclude-files"));
+        Set<String> excludeExts = toLowerCaseSet(config.getStringList("exclude-extensions"));
+        excludeFiles.add("session.lock"); // 总是排除
+
+        int progressEvery = Math.max(1, config.getInt("progress-every-files", 500));
+        int bufferKB = Math.max(16, config.getInt("buffer-size-kb", 64));
+
+        // 收集有效目标
+        List<File> targets = new ArrayList<>();
+        for (String p : targetsCfg) {
+            if (p == null || p.trim().isEmpty()) continue;
+            File f = new File(serverRoot, p);
+            if (f.exists()) {
+                targets.add(f);
+            } else {
+                plugin.getLogger().warning("目标不存在: " + p);
+            }
+        }
+        if (targets.isEmpty()) {
+            return new Result(false, 0, 0, "无有效目标");
+        }
+
+        long totalFiles = countFiles(serverRoot, targets, excludeDirs, excludeFiles, excludeExts);
+
+        // 广播开始
+        if (ifBroadcast) {
+            String start = ChatColor.translateAlternateColorCodes('&', "&a[EasyBackUp] &3正在备份，可能引起短时间卡顿...");
+            Bukkit.getScheduler().runTask(plugin, () -> Bukkit.broadcastMessage(start));
+        }
+
+        // 主线程: save-all + save-off
+        try {
+            runSyncCommand("save-all flush");
+            runSyncCommand("save-off");
+        } catch (Exception e) {
+            plugin.getLogger().warning("调用 save-all/save-off 失败: " + e.getMessage());
+        }
+
+        long processed = 0;
+        boolean success = false;
+        try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(zipFile), bufferKB * 1024);
+             ZipOutputStream zos = new ZipOutputStream(bos)) {
+
+            byte[] buffer = new byte[bufferKB * 1024];
+            for (File t : targets) {
+                processed = zipAny(serverRoot, t, zos, excludeDirs, excludeFiles, excludeExts, buffer, processed, totalFiles, progressEvery);
+            }
+            success = true;
+        } catch (IOException e) {
+            plugin.getLogger().severe("备份失败: " + e.getMessage());
+        } finally {
+            // 主线程: save-on
+            try {
+                runSyncCommand("save-on");
+            } catch (Exception e) {
+                plugin.getLogger().warning("调用 save-on 失败: " + e.getMessage());
+            }
+        }
+
+        long zipSize = zipFile.exists() ? zipFile.length() : 0L;
+
+        // 清理历史
+        cleanOldBackups(outputDir);
+
+        if (ifBroadcast) {
+            final boolean ok = success;
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                String end = ChatColor.translateAlternateColorCodes('&', ok ? "&a[EasyBackUp] &3备份完成." : "&c[EasyBackUp] &3备份失败.");
+                Bukkit.broadcastMessage(end);
+            });
+        }
+
+        return new Result(success, totalFiles, zipSize, success ? "OK" : "FAILED");
+    }
+
+    private long countFiles(File serverRoot, List<File> targets, Set<String> excludeDirs, Set<String> excludeFiles, Set<String> excludeExts) {
+        long count = 0;
+        for (File t : targets) {
+            count += countRec(t, excludeDirs, excludeFiles, excludeExts);
+        }
+        return count;
+    }
+
+    private long countRec(File f, Set<String> excludeDirs, Set<String> excludeFiles, Set<String> excludeExts) {
+        if (!f.exists()) return 0;
+        if (f.isDirectory()) {
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (excludeDirs.contains(name)) return 0;
+            long c = 0;
+            File[] list = f.listFiles();
+            if (list != null) {
+                for (File x : list) c += countRec(x, excludeDirs, excludeFiles, excludeExts);
+            }
+            return c;
+        } else {
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (excludeFiles.contains(name)) return 0;
+            int dot = name.lastIndexOf('.');
+            if (dot >= 0) {
+                String ext = name.substring(dot + 1);
+                if (excludeExts.contains(ext)) return 0;
+            }
+            return 1;
+        }
+    }
+
+    private long zipAny(File serverRoot, File f, ZipOutputStream zos, Set<String> excludeDirs, Set<String> excludeFiles, Set<String> excludeExts,
+                        byte[] buffer, long processed, long totalFiles, int progressEvery) throws IOException {
+        if (!f.exists()) return processed;
+        if (f.isDirectory()) {
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (excludeDirs.contains(name)) return processed;
+            File[] list = f.listFiles();
+            if (list != null) {
+                for (File x : list) {
+                    processed = zipAny(serverRoot, x, zos, excludeDirs, excludeFiles, excludeExts, buffer, processed, totalFiles, progressEvery);
                 }
             }
         } else {
-            plugin.getLogger().warning("配置文件target-save-dir值为空，无需另外备份文件，请确认");
-        }
-    }
-
-
-    @Override
-    public void run() {
-        String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
-        if (!backupMVFolderHash.isEmpty()) {
-
-            boolean ifBroadcastMessage = config.getBoolean("notify-players", true);
-            if (ifBroadcastMessage) {
-                String startMessage = ChatColor.translateAlternateColorCodes('&', "&a[EasyBackUp] &3正在备份，可能引起短时间卡顿.");
-                Bukkit.broadcastMessage(startMessage);
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (excludeFiles.contains(name)) return processed;
+            int dot = name.lastIndexOf('.');
+            if (dot >= 0) {
+                String ext = name.substring(dot + 1);
+                if (excludeExts.contains(ext)) return processed;
             }
-
-            // 开始根据哈希来将文件夹备份到相应的备份文件夹
-            for (Map.Entry<File, File> entry : backupMVFolderHash.entrySet()) {
-                File worldDir = entry.getKey();
-                File backupMVDir = entry.getValue();
-                File zipFile = new File(backupMVDir, worldDir.getName() + "_" + timestamp + ".zip");
-                try{
-                    zipFolder(worldDir, zipFile, Arrays.asList("plugins", backupMVDir.getName()));
-                } catch (Exception e) {
-                    plugin.getLogger().severe(worldDir.getName() + " 文件夹备份失败: " + e.getMessage());
-                    e.printStackTrace();
-                }
-                plugin.getLogger().info("已成功备份文件夹 " + worldDir.getName() + " 为 " + zipFile.getName());
-                cleanOldBackups(backupMVDir);
-            }
-            if (ifBroadcastMessage) {
-                String endMessage = ChatColor.translateAlternateColorCodes('&', "&a[EasyBackUp] &3备份成功.");
-                Bukkit.broadcastMessage(endMessage);
-            }
-        }
-    }
-
-    private void zipFolder(File sourceFolder, File zipFile, List<String> excludeDirs) throws IOException {
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
-            zipFiles(sourceFolder, sourceFolder, zos, excludeDirs);
-        }
-    }
-
-    private void zipFiles(File rootFolder, File currentFile, ZipOutputStream zos, List<String> excludeDirs) throws IOException {
-        if (excludeDirs.contains(currentFile.getName())) return;
-
-        if (currentFile.isDirectory()) {
-            for (File file : Objects.requireNonNull(currentFile.listFiles())) {
-                zipFiles(rootFolder, file, zos, excludeDirs);
-            }
-        } else {
-            String entryName = rootFolder.toURI().relativize(currentFile.toURI()).getPath();
+            String entryName = serverRoot.toURI().relativize(f.toURI()).getPath();
             try {
                 zos.putNextEntry(new ZipEntry(entryName));
-                try (FileInputStream fis = new FileInputStream(currentFile)) {
-                    byte[] buffer = new byte[4096];
+                try (InputStream in = new BufferedInputStream(new FileInputStream(f), buffer.length)) {
                     int len;
-                    while ((len = fis.read(buffer)) > 0) {
+                    while ((len = in.read(buffer)) != -1) {
                         zos.write(buffer, 0, len);
                     }
                 }
                 zos.closeEntry();
+                processed++;
+                if (processed % progressEvery == 0) {
+                    plugin.getLogger().info("备份进度: " + processed + (totalFiles > 0 ? ("/" + totalFiles) : "") + " 文件...");
+                }
             } catch (IOException e) {
-                // 捕获并记录文件锁定错误，但继续备份其他文件,session.lock跳过，不影响
-                if (!currentFile.getName().equals("session.lock")) {
-                    plugin.getLogger().warning("跳过文件 " + currentFile.getName() + ": " + e.getMessage());
+                if (!f.getName().equals("session.lock")) {
+                    plugin.getLogger().warning("跳过文件 " + f.getName() + ": " + e.getMessage());
                 }
             }
         }
+        return processed;
     }
 
-    private void cleanOldBackups(File BACKUPFOLDER) {
-        File[] files = BACKUPFOLDER.listFiles((dir, name) -> name.endsWith(".zip"));
+    private void runSyncCommand(String command) throws ExecutionException, InterruptedException {
+        Future<?> future = Bukkit.getScheduler().callSyncMethod(plugin, (Callable<Object>) () -> {
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+            return null;
+        });
+        future.get();
+    }
 
-        int maxBackups = config.getInt("max-backups");
-
+    private void cleanOldBackups(File outputDir) {
+        File[] files = outputDir.listFiles((dir, name) -> name.startsWith("EasyBackUp_") && name.endsWith(".zip"));
+        int maxBackups = Math.max(0, config.getInt("max-backups", 10));
+        if (maxBackups == 0) return; // 0 表示不清理
         if (files != null && files.length > maxBackups) {
             Arrays.sort(files, Comparator.comparingLong(File::lastModified));
             for (int i = 0; i < files.length - maxBackups; i++) {
                 if (!files[i].delete()) {
                     plugin.getLogger().warning("无法删除旧备份：" + files[i].getName());
-                    continue;
+                } else {
+                    plugin.getLogger().info("已删除旧备份：" + files[i].getName());
                 }
-                plugin.getLogger().info("已删除旧备份：" + files[i].getName());
             }
         }
+    }
+
+    private static Set<String> toLowerCaseSet(List<String> list) {
+        Set<String> set = new HashSet<>();
+        if (list != null) {
+            for (String s : list) if (s != null) set.add(s.toLowerCase(Locale.ROOT));
+        }
+        return set;
     }
 }
