@@ -51,7 +51,7 @@ public class BackupTask {
             return new Result(false, 0, 0, "无目标");
         }
 
-        File serverRoot = plugin.getDataFolder().getParentFile().getParentFile();
+    File serverRoot = resolveServerRoot();
 
         // 解析输出目录
         String outPath = config.getString("output-dir", "backups");
@@ -194,7 +194,15 @@ public class BackupTask {
                 String ext = name.substring(dot + 1);
                 if (excludeExts.contains(ext)) return processed;
             }
-            String entryName = serverRoot.toURI().relativize(f.toURI()).getPath();
+            String entryName;
+            try {
+                entryName = serverRoot != null ? serverRoot.toURI().relativize(f.toURI()).getPath() : f.getName();
+                if (entryName == null || entryName.isEmpty()) {
+                    entryName = f.getName();
+                }
+            } catch (Exception ex) {
+                entryName = f.getName();
+            }
             try {
                 zos.putNextEntry(new ZipEntry(entryName));
                 try (InputStream in = new BufferedInputStream(new FileInputStream(f), buffer.length)) {
@@ -247,5 +255,27 @@ public class BackupTask {
             for (String s : list) if (s != null) set.add(s.toLowerCase(Locale.ROOT));
         }
         return set;
+    }
+
+    private File resolveServerRoot() {
+        try {
+            File wc = Bukkit.getWorldContainer();
+            if (wc != null) return wc.getAbsoluteFile();
+        } catch (Throwable ignored) {}
+
+        try {
+            File df = plugin.getDataFolder();
+            if (df != null) {
+                File parent = df.getParentFile(); // plugins/
+                if (parent != null) {
+                    File root = parent.getParentFile(); // server root
+                    if (root != null) return root.getAbsoluteFile();
+                    return parent.getAbsoluteFile();
+                }
+                return df.getAbsoluteFile();
+            }
+        } catch (Throwable ignored) {}
+
+        return new File(".").getAbsoluteFile();
     }
 }
