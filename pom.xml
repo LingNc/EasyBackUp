@@ -7,7 +7,7 @@
 
     <groupId>io.github.lingnc</groupId>
     <artifactId>EasyBackUp</artifactId>
-    <version>1.3.2</version>
+    <version>1.3.3</version>
     <packaging>jar</packaging>
 
     <name>EasyBackUp</name>

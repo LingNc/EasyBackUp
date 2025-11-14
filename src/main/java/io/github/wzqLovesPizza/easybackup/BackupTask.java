@@ -242,9 +242,21 @@ public class BackupTask {
 
     private void cleanOldBackups(File outputDir) {
         File[] files = outputDir.listFiles((dir, name) -> name.startsWith("EasyBackUp_") && name.endsWith(".zip"));
+        if (files == null || files.length == 0) return;
+
+        // 如果配置了分层保留策略，则优先使用
+        List<Map<String, Object>> tiers = getRetentionTiers();
+        int maxTotal = config.getInt("retention.max-total", -1);
+
+        if (tiers != null && !tiers.isEmpty() && maxTotal != 0) {
+            applyTieredRetention(files, tiers, maxTotal);
+            return;
+        }
+
+        // 否则退回到简单的 max-backups 逻辑
         int maxBackups = Math.max(0, config.getInt("max-backups", 10));
         if (maxBackups == 0) return; // 0 表示不清理
-        if (files != null && files.length > maxBackups) {
+        if (files.length > maxBackups) {
             Arrays.sort(files, Comparator.comparingLong(File::lastModified));
             for (int i = 0; i < files.length - maxBackups; i++) {
                 if (!files[i].delete()) {
@@ -254,6 +266,193 @@ public class BackupTask {
                 }
             }
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> getRetentionTiers() {
+        Object o = config.get("retention.tiers");
+        if (o instanceof List) {
+            return (List<Map<String, Object>>) o;
+        }
+        return Collections.emptyList();
+    }
+
+    private void applyTieredRetention(File[] files, List<Map<String, Object>> tiers, int maxTotal) {
+        long now = System.currentTimeMillis();
+
+        // 解析文件的时间戳
+        List<BackupEntry> entries = new ArrayList<>();
+        for (File f : files) {
+            Long ts = parseTimestampFromName(f.getName());
+            if (ts == null) ts = f.lastModified();
+            entries.add(new BackupEntry(f, ts));
+        }
+        // 按时间从新到旧排序
+        entries.sort((a, b) -> Long.compare(b.timestamp, a.timestamp));
+
+        List<BackupEntry> selected = new ArrayList<>();
+        long lastKeptTs = Long.MIN_VALUE; // 用于全局间隔检查（简单处理）
+
+        for (Map<String, Object> tier : tiers) {
+            String windowStr = asString(tier.get("window"), null);
+            int windowSec = windowStr != null ? safeParseDurationSeconds(windowStr) : 0;
+
+            // 支持两种策略：
+            // 1) spacings: 非均匀间隔序列（优先）
+            // 2) min-spacing + growth-multiplier: 基础间隔 + 逐次增长（几何或线性，默认1.0表示不增长）
+            List<Integer> spacingList = parseSpacingList(tier.get("spacings"));
+            String spacingStr = asString(tier.get("min-spacing"), "0S");
+            int baseSpacingSec = safeParseDurationSeconds(spacingStr);
+            double growth = asDouble(tier.get("growth-multiplier"), 1.0);
+
+            int keepCfg = asInt(tier.get("keep"), 0);
+            int keep;
+            if (!spacingList.isEmpty()) {
+                keep = keepCfg > 0 ? Math.min(keepCfg, spacingList.size()) : spacingList.size();
+            } else {
+                keep = keepCfg;
+            }
+
+            if (keep <= 0) continue;
+            long windowStart = windowSec > 0 ? now - windowSec * 1000L : Long.MIN_VALUE;
+
+            int keptInTier = 0;
+            long lastKeptInTier = Long.MIN_VALUE;
+            for (BackupEntry e : entries) {
+                if (selected.contains(e)) continue;
+                if (e.timestamp < windowStart) continue;
+
+                int spacingForPickSec;
+                if (!spacingList.isEmpty() && keptInTier < spacingList.size()) {
+                    spacingForPickSec = spacingList.get(keptInTier);
+                } else {
+                    // base * growth^i
+                    spacingForPickSec = (int) Math.round(baseSpacingSec * Math.pow(Math.max(1.0, growth), keptInTier));
+                }
+
+                boolean okGlobal = (lastKeptTs == Long.MIN_VALUE) || (e.timestamp <= lastKeptTs - spacingForPickSec * 1000L);
+                boolean okTier = (lastKeptInTier == Long.MIN_VALUE) || (e.timestamp <= lastKeptInTier - spacingForPickSec * 1000L);
+                if (okGlobal && okTier) {
+                    selected.add(e);
+                    keptInTier++;
+                    lastKeptInTier = e.timestamp;
+                    lastKeptTs = e.timestamp;
+                    if (keptInTier >= keep) break;
+                }
+            }
+        }
+
+        // 如果仍然少于 maxTotal，补齐最新的
+        if (maxTotal > 0) {
+            for (BackupEntry e : entries) {
+                if (selected.size() >= maxTotal) break;
+                if (!selected.contains(e)) selected.add(e);
+            }
+        }
+
+        // 需要删除的 = 未被选中的
+        Set<File> keepFiles = new HashSet<>();
+        for (BackupEntry e : selected) keepFiles.add(e.file);
+        for (BackupEntry e : entries) {
+            if (!keepFiles.contains(e.file)) {
+                if (!e.file.delete()) {
+                    plugin.getLogger().warning("无法删除旧备份：" + e.file.getName());
+                } else {
+                    plugin.getLogger().info("已删除旧备份：" + e.file.getName());
+                }
+            }
+        }
+    }
+
+    private static class BackupEntry {
+        final File file;
+        final long timestamp;
+        BackupEntry(File file, long timestamp) { this.file = file; this.timestamp = timestamp; }
+    }
+
+    private static Long parseTimestampFromName(String name) {
+        // 期望格式: EasyBackUp_yyyy-MM-dd_HH-mm-ss.zip
+        try {
+            int us = name.indexOf('_');
+            int dot = name.lastIndexOf('.')
+;            if (us >= 0 && dot > us) {
+                String ts = name.substring(us + 1, dot);
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
+                sdf.setLenient(false);
+                Date d = sdf.parse(ts);
+                return d.getTime();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static String asString(Object o, String def) {
+        return o == null ? def : String.valueOf(o);
+    }
+
+    private static int asInt(Object o, int def) {
+        try {
+            if (o instanceof Number) return ((Number) o).intValue();
+            if (o != null) return Integer.parseInt(String.valueOf(o));
+        } catch (Exception ignored) {}
+        return def;
+    }
+
+    private static double asDouble(Object o, double def) {
+        try {
+            if (o instanceof Number) return ((Number) o).doubleValue();
+            if (o != null) return Double.parseDouble(String.valueOf(o));
+        } catch (Exception ignored) {}
+        return def;
+    }
+
+    private static List<Integer> parseSpacingList(Object o) {
+        List<Integer> list = new ArrayList<>();
+        if (o instanceof List) {
+            for (Object it : (List<?>) o) {
+                String s = asString(it, null);
+                if (s == null) continue;
+                int sec = safeParseDurationSeconds(s);
+                if (sec > 0) list.add(sec);
+            }
+        }
+        return list;
+    }
+
+    private static int safeParseDurationSeconds(String s) {
+        try {
+            return parseDurationSeconds(s);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    // 与主类中一致的时长解析：支持 1D2H30M45S / 3H / 5M / 45S / 大小写均可
+    private static int parseDurationSeconds(String input) {
+        if (input == null || input.trim().isEmpty()) throw new IllegalArgumentException("empty");
+        String s = input.trim().toLowerCase().replaceAll("\\s+", "");
+        int total = 0;
+        int num = -1;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isDigit(c)) {
+                int d = c - '0';
+                num = (num < 0) ? d : (num * 10 + d);
+            } else {
+                if (num < 0) throw new IllegalArgumentException("missing number before unit");
+                switch (c) {
+                    case 'd': total += num * 86400; break;
+                    case 'h': total += num * 3600; break;
+                    case 'm': total += num * 60; break;
+                    case 's': total += num; break;
+                    default: throw new IllegalArgumentException("unknown unit: " + c);
+                }
+                num = -1;
+            }
+        }
+        if (num >= 0) throw new IllegalArgumentException("unit required for trailing number");
+        if (total < 0) total = 0;
+        return total;
     }
 
     private static Set<String> toLowerCaseSet(List<String> list) {

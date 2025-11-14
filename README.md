@@ -38,12 +38,46 @@
 	- 相对路径：相对服务器根目录（默认 `backups`）
 	- 绝对路径：直接使用（支持 Win/Linux）
 - `max-backups`: 最多保留多少个 ZIP（按修改时间删除最旧）
+	- 若未配置智能策略则生效；如配置了 `retention.tiers` 则按智能策略优先
 - `notify-players`: 开始/结束是否全服公告
 - `exclude-dirs`: 要排除的目录名（仅按名称匹配）
 - `exclude-files`: 要排除的文件名（仅按名称匹配）
 - `exclude-extensions`: 要排除的后缀名（例如 `log`, `tmp`，无需带点）
 - `progress-every-files`: 处理多少个文件输出一次进度到控制台（默认 500）
 - `buffer-size-kb`: 压缩时的缓冲区大小（默认 64）
+
+### 智能保留策略（可选）
+
+通过 `retention.tiers` 实现“分层保留”（类似 GFS），支持两种写法：
+
+```yaml
+retention:
+	max-total: 10
+	tiers:
+		# 写法A：非均匀间隔序列（spacings），长度决定最多保留数量
+		- window: '1D'
+			spacings: ['1H','1H','3H','6H']
+
+		# 写法B：基础间隔 + 逐次增长（growth-multiplier）
+		- window: '7D'
+			keep: 3
+			min-spacing: '6H'
+			growth-multiplier: 1.0   # 例如设为 2.0 则 6H、12H、24H
+
+		- window: '30D'
+			keep: 2
+			min-spacing: '1D'
+		- window: '365D'
+			keep: 1
+			min-spacing: '7D'
+```
+
+说明：
+- 从第一层到最后一层依次选取符合窗口的备份；
+- 写法A：依序使用 spacings[0], spacings[1]… 作为每次选取的最小间隔；
+- 写法B：第 i 次选取的间隔 = min-spacing × (growth-multiplier^i)；
+- 层与层之间也会做全局最小间隔检查（与当前 pick 间隔相同）以避免过密；
+- 完成后若少于 `max-total`，会按时间从新到旧补齐；若多于 `max-total`，会删掉更旧的。
 
 完整配置见仓库内 `src/main/resources/config.yml` 注释。
 

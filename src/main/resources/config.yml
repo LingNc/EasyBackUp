@@ -36,3 +36,19 @@ exclude-extensions: []  # 后缀名，不要带点（如 'log', 'tmp'）
 # 进度与性能
 progress-every-files: 500   # 每处理多少个文件在控制台输出一次进度
 buffer-size-kb: 64          # 压缩缓冲区大小（越大通常越快，但更占内存）
+
+# 智能保留策略（可选）。如果配置了 tiers，则优先按 tiers 进行“分层保留”，否则退回到 max-backups 规则。
+# 设计：按从上到下的层依次选择备份，满足每层的 keep 数量与最小间隔（min-spacing），层的 window 表示从“现在”往回统计的时间窗口。
+# 示例默认：总上限为 10，其中：今天(24h内)保留 4 个且最小间隔 1h；7 天内额外保留 3 个且间隔 6h；30 天内额外保留 2 个且间隔 1d；365 天内额外保留 1 个且间隔 7d。
+retention:
+  max-total: 10
+  tiers:
+    - window: '1D'     # 最近 1 天内，使用非均匀间隔：最近2个间隔1H，再下2个间隔3H/6H
+      spacings: ['1H','1H','3H','6H']
+    - window: '7D'     # 最近 7 天内（包含上层之外的额外选择）
+      keep: 4
+      min-spacing: '12H'
+      growth-multiplier: 2.0
+    - window: '30D'    # 最近 30 天内
+      keep: 2
+      min-spacing: '10D'
