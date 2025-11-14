@@ -35,10 +35,10 @@
 - `interval`: 自动备份间隔（字符串），支持 `xDxHxMxS`，如 `6H`、`1D2H30M`、`45S`、`5M`；设为 `0S` 或留空则关闭自动备份
 - `target-save-paths`: 需要备份的“相对服务器根目录”的路径列表，既可填目录也可填单个文件
 - `output-dir`: 备份输出目录
-	- 相对路径：相对服务器根目录（默认 `backups`）
-	- 绝对路径：直接使用（支持 Win/Linux）
+    - 相对路径：相对服务器根目录（默认 `backups`）
+    - 绝对路径：直接使用（支持 Win/Linux）
 - `max-backups`: 最多保留多少个 ZIP（按修改时间删除最旧）
-	- 若未配置智能策略则生效；如配置了 `retention.tiers` 则按智能策略优先
+    - 若未配置智能策略则生效；如配置了 `retention.tiers` 则按智能策略优先
 - `notify-players`: 开始/结束是否全服公告
 - `exclude-dirs`: 要排除的目录名（仅按名称匹配）
 - `exclude-files`: 要排除的文件名（仅按名称匹配）
@@ -52,24 +52,24 @@
 
 ```yaml
 retention:
-	max-total: 10
-	tiers:
-		# 写法A：非均匀间隔序列（spacings），长度决定最多保留数量
-		- window: '1D'
-			spacings: ['1H','1H','3H','6H']
+    max-total: 10
+    tiers:
+        # 写法A：非均匀间隔序列（spacings），长度决定最多保留数量
+        - window: '1D'
+            spacings: ['1H','1H','3H','6H']
 
-		# 写法B：基础间隔 + 逐次增长（growth-multiplier）
-		- window: '7D'
-			keep: 3
-			min-spacing: '6H'
-			growth-multiplier: 1.0   # 例如设为 2.0 则 6H、12H、24H
+        # 写法B：基础间隔 + 逐次增长（growth-multiplier）
+        - window: '7D'
+            keep: 3
+            min-spacing: '6H'
+            growth-multiplier: 1.0   # 例如设为 2.0 则 6H、12H、24H
 
-		- window: '30D'
-			keep: 2
-			min-spacing: '1D'
-		- window: '365D'
-			keep: 1
-			min-spacing: '7D'
+        - window: '30D'
+            keep: 2
+            min-spacing: '1D'
+        - window: '365D'
+            keep: 1
+            min-spacing: '7D'
 ```
 
 说明：
