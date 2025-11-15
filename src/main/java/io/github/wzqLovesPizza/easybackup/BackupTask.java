@@ -7,6 +7,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.logging.Logger;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -249,7 +250,7 @@ public class BackupTask {
         int maxTotal = config.getInt("retention.max-total", -1);
 
         if (tiers != null && !tiers.isEmpty() && maxTotal != 0) {
-            applyTieredRetention(files, tiers, maxTotal);
+            applyTieredRetention(files, tiers, maxTotal, plugin.getLogger(), System.currentTimeMillis());
             return;
         }
 
@@ -277,8 +278,11 @@ public class BackupTask {
         return Collections.emptyList();
     }
 
-    private void applyTieredRetention(File[] files, List<Map<String, Object>> tiers, int maxTotal) {
-        long now = System.currentTimeMillis();
+    static void applyTieredRetention(File[] files, List<Map<String, Object>> tiers, int maxTotal, Logger logger) {
+        applyTieredRetention(files, tiers, maxTotal, logger, System.currentTimeMillis());
+    }
+
+    static void applyTieredRetention(File[] files, List<Map<String, Object>> tiers, int maxTotal, Logger logger, long now) {
 
         // 解析文件的时间戳
         List<BackupEntry> entries = new ArrayList<>();
@@ -291,7 +295,9 @@ public class BackupTask {
         entries.sort((a, b) -> Long.compare(b.timestamp, a.timestamp));
 
         List<BackupEntry> selected = new ArrayList<>();
-        long lastKeptTs = Long.MIN_VALUE; // 用于全局间隔检查（简单处理）
+        Set<BackupEntry> selectedSet = new HashSet<>();
+
+        long upperBoundExclusive = Long.MAX_VALUE; // 确保下一层只触及更久远的窗口
 
         for (Map<String, Object> tier : tiers) {
             String windowStr = asString(tier.get("window"), null);
@@ -317,37 +323,72 @@ public class BackupTask {
             long windowStart = windowSec > 0 ? now - windowSec * 1000L : Long.MIN_VALUE;
 
             int keptInTier = 0;
-            long lastKeptInTier = Long.MIN_VALUE;
-            for (BackupEntry e : entries) {
-                if (selected.contains(e)) continue;
-                if (e.timestamp < windowStart) continue;
+            long lastKeptInTier = Long.MAX_VALUE;
+            while (keptInTier < keep) {
+                BackupEntry chosen = null;
+                BackupEntry oldestCandidate = null;
 
                 int spacingForPickSec;
-                if (!spacingList.isEmpty() && keptInTier < spacingList.size()) {
-                    spacingForPickSec = spacingList.get(keptInTier);
+                if (keptInTier == 0) {
+                    spacingForPickSec = 0; // 第一个永远保留最新的一个
+                } else if (!spacingList.isEmpty()) {
+                    int idx = Math.min(keptInTier - 1, spacingList.size() - 1);
+                    spacingForPickSec = spacingList.get(idx);
                 } else {
-                    // base * growth^i
-                    spacingForPickSec = (int) Math.round(baseSpacingSec * Math.pow(Math.max(1.0, growth), keptInTier));
+                    spacingForPickSec = (int) Math.round(baseSpacingSec * Math.pow(Math.max(1.0, growth), keptInTier - 1));
+                }
+                long spacingMs = spacingForPickSec * 1000L;
+
+                for (BackupEntry e : entries) {
+                    if (selectedSet.contains(e)) continue;
+                    if (e.timestamp < windowStart) continue;
+                    if (e.timestamp >= upperBoundExclusive) continue;
+
+                    oldestCandidate = e; // 由于按时间降序遍历，最后一次赋值即为窗口内最老的备份
+
+                    if (lastKeptInTier == Long.MAX_VALUE || e.timestamp <= lastKeptInTier - spacingMs) {
+                        chosen = e;
+                        break;
+                    }
                 }
 
-                boolean okGlobal = (lastKeptTs == Long.MIN_VALUE) || (e.timestamp <= lastKeptTs - spacingForPickSec * 1000L);
-                boolean okTier = (lastKeptInTier == Long.MIN_VALUE) || (e.timestamp <= lastKeptInTier - spacingForPickSec * 1000L);
-                if (okGlobal && okTier) {
-                    selected.add(e);
-                    keptInTier++;
-                    lastKeptInTier = e.timestamp;
-                    lastKeptTs = e.timestamp;
-                    if (keptInTier >= keep) break;
+                if (chosen == null) {
+                    if (oldestCandidate != null) {
+                        chosen = oldestCandidate; // 没有满足间隔，也先占位以便后续老化
+                    } else {
+                        break; // 窗口内没有可用候选，结束该层
+                    }
                 }
+
+                selected.add(chosen);
+                selectedSet.add(chosen);
+                keptInTier++;
+                lastKeptInTier = chosen.timestamp;
+            }
+
+            if (windowSec > 0) {
+                upperBoundExclusive = Math.min(upperBoundExclusive, windowStart);
             }
         }
 
-        // 如果仍然少于 maxTotal，补齐最新的
-        if (maxTotal > 0) {
-            for (BackupEntry e : entries) {
+        // 若选中的数量少于 maxTotal，保留最老的若干作为“候补”，让它们有机会晋升到更高层
+        if (maxTotal > 0 && selected.size() < maxTotal) {
+            List<BackupEntry> oldestFirst = new ArrayList<>(entries);
+            oldestFirst.sort(Comparator.comparingLong(e -> e.timestamp));
+            for (BackupEntry e : oldestFirst) {
                 if (selected.size() >= maxTotal) break;
-                if (!selected.contains(e)) selected.add(e);
+                if (selectedSet.contains(e)) continue;
+                selected.add(e);
+                selectedSet.add(e);
             }
+        }
+
+        // 如果配置的总量上限小于选中数量，截断为最新的 maxTotal 个
+        if (maxTotal > 0 && selected.size() > maxTotal) {
+            selected.sort((a, b) -> Long.compare(b.timestamp, a.timestamp));
+            List<BackupEntry> trimmed = new ArrayList<>(selected.subList(0, maxTotal));
+            selected = trimmed;
+            selectedSet = new HashSet<>(trimmed);
         }
 
         // 需要删除的 = 未被选中的
@@ -356,9 +397,13 @@ public class BackupTask {
         for (BackupEntry e : entries) {
             if (!keepFiles.contains(e.file)) {
                 if (!e.file.delete()) {
-                    plugin.getLogger().warning("无法删除旧备份：" + e.file.getName());
+                    if (logger != null) {
+                        logger.warning("无法删除旧备份：" + e.file.getName());
+                    }
                 } else {
-                    plugin.getLogger().info("已删除旧备份：" + e.file.getName());
+                    if (logger != null) {
+                        logger.info("已删除旧备份：" + e.file.getName());
+                    }
                 }
             }
         }

@@ -4,7 +4,7 @@
 
 # 备份间隔（字符串格式，大小写均可）：示例 6H / 1D2H30M / 45S / 5M 等；
 # 设为 0S 或留空视为关闭自动备份。
-interval: '6H'
+interval: '1H'
 
 # 需要备份的路径（相对服务器根目录）。既可以是目录，也可以是单个文件。
 # 例:
@@ -44,11 +44,10 @@ retention:
   max-total: 10
   tiers:
     - window: '1D'     # 最近 1 天内，使用非均匀间隔：最近2个间隔1H，再下2个间隔3H/6H
-      spacings: ['1H','1H','3H','6H']
+      spacings: ['1H','2H','3H','6H']
     - window: '7D'     # 最近 7 天内（包含上层之外的额外选择）
       keep: 4
       min-spacing: '12H'
       growth-multiplier: 2.0
     - window: '30D'    # 最近 30 天内
-      keep: 2
-      min-spacing: '10D'
+      spacings: ['10D','15D']
